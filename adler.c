@@ -2,6 +2,7 @@
 #include <minix/chardriver.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <minix/ds.h>
 
 /*
@@ -17,7 +18,7 @@ static ssize_t adler_read(devminor_t minor, u64_t position, endpoint_t endpt,
 /* SEF functions and variables. */
 static void sef_local_startup(void);
 static int sef_cb_init(int type, sef_init_info_t *info);
-static int sef_cb_lu_state_save(int, int);
+static int sef_cb_lu_state_save(int);
 static int lu_state_restore(void);
 
 /* Entry points to the adler driver. */
@@ -45,8 +46,6 @@ static void adler(char* buffer, size_t buffer_size)
         A %= adler_mod;
         B %= adler_mod;
     }
-
-    return (B << 16) | A;
 }
 
 static int adler_open(devminor_t UNUSED(minor), int UNUSED(access),
@@ -65,7 +64,7 @@ static ssize_t adler_write(devminor_t UNUSED(minor), u64_t position,
     cdev_id_t UNUSED(id))
 {
 
-    char buffer[4096];
+    unsigned char buffer[4096];
     size_t buff_size = 0;
     int ret;
     u64_t dev_size;
@@ -102,18 +101,17 @@ static ssize_t adler_read(devminor_t minor, u64_t position, endpoint_t endpt,
 
     size = 8;
 
-    memset(ptr, 0 , 9);
+    memset(ptr, 48 , 9);
     memset(checksum_str, 0, 9);
 
-    checksum = (B << 16) | A;
+    checksum = B * 65536 + A;
     sprintf(checksum_str, "%x", checksum);
-    ch_str_len = strlen(ch_str_len);
+    ch_str_len = strlen(checksum_str);
     memcpy(ptr + 8  - ch_str_len, checksum_str, ch_str_len);
     A = 1;
     B = 0;
 
     /* Copy the requested part to the caller. */
-    ptr = buf + (size_t)position;
     if ((ret = sys_safecopyto(endpt, grant, 0, (vir_bytes) ptr, size)) != OK)
         return ret;
 
@@ -121,7 +119,7 @@ static ssize_t adler_read(devminor_t minor, u64_t position, endpoint_t endpt,
     return size;
 }
 
-static int sef_cb_lu_state_save(int UNUSED(state), int UNUSED(flags)) {
+static int sef_cb_lu_state_save(int UNUSED(state)) {
 /* Save the state. */
     ds_publish_u32("A", A, DSF_OVERWRITE);
     ds_publish_u32("B", B, DSF_OVERWRITE);
@@ -154,10 +152,15 @@ static void sef_local_startup()
     /*
      * Register live update callbacks.
      */
+    /* - Agree to update immediately when LU is requested in a valid state. */
+    sef_setcb_lu_prepare(sef_cb_lu_prepare_always_ready);
+    /* - Support live update starting from any standard state. */
+    sef_setcb_lu_state_isvalid(sef_cb_lu_state_isvalid_standard);
+    /* - Register a custom routine to save the state. */
     sef_setcb_lu_state_save(sef_cb_lu_state_save);
 
     /* Let SEF perform startup. */
-    sef_startup();
+   sef_startup();
 }
 
 static int sef_cb_init(int type, sef_init_info_t *UNUSED(info))
